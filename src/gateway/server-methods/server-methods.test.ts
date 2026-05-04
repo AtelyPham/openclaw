@@ -1327,6 +1327,33 @@ describe("exec approval handlers", () => {
     expect(request["warningText"]).not.toContain("\\u{A}");
   });
 
+  it("accepts and sanitizes exec approval command explanation metadata", async () => {
+    const { handlers, broadcasts, respond, context } = createExecApprovalFixture();
+    await requestExecApproval({
+      handlers,
+      respond,
+      context,
+      params: {
+        timeoutMs: 10,
+        commandExplanationLines: [""],
+        commandExplanationHighlights: [
+          { startIndex: 0, endIndex: 2, kind: "command", severity: "info" },
+          { startIndex: 3, endIndex: 8, kind: "risk", severity: "warning" },
+          { startIndex: 9, endIndex: 18, kind: "risk", severity: "danger" },
+        ],
+      },
+    });
+    const requested = broadcasts.find((entry) => entry.event === "exec.approval.requested");
+    expect(requested).toBeTruthy();
+    const request = (requested?.payload as { request?: Record<string, unknown> })?.request ?? {};
+    expect(request["commandExplanationLines"]).toEqual([]);
+    expect(request["commandExplanationHighlights"]).toEqual([
+      { startIndex: 0, endIndex: 2, kind: "command", severity: "info" },
+      { startIndex: 3, endIndex: 8, kind: "risk", severity: "warning" },
+      { startIndex: 9, endIndex: 18, kind: "risk", severity: "danger" },
+    ]);
+  });
+
   it("accepts resolve during broadcast", async () => {
     const manager = new ExecApprovalManager();
     const handlers = createExecApprovalHandlers(manager);

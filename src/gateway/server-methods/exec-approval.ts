@@ -133,6 +133,13 @@ export function createExecApprovalHandlers(
         security?: string;
         ask?: string;
         warningText?: string | null;
+        commandExplanationLines?: string[];
+        commandExplanationHighlights?: {
+          startIndex: number;
+          endIndex: number;
+          kind: "command" | "risk";
+          severity?: "info" | "warning" | "danger";
+        }[];
         agentId?: string;
         resolvedPath?: string;
         sessionKey?: string;
@@ -207,6 +214,12 @@ export function createExecApprovalHandlers(
       }
       const envBinding = buildSystemRunApprovalEnvBinding(p.env);
       const warningText = normalizeOptionalString(p.warningText);
+      const commandExplanationLines = Array.isArray(p.commandExplanationLines)
+        ? p.commandExplanationLines
+            .map((line) => sanitizeExecApprovalWarningText(line))
+            .map((line) => normalizeOptionalString(line))
+            .filter((line): line is string => Boolean(line))
+        : undefined;
       const systemRunBinding =
         host === "node"
           ? buildSystemRunApprovalBinding({
@@ -241,6 +254,8 @@ export function createExecApprovalHandlers(
         security: p.security ?? null,
         ask: p.ask ?? null,
         warningText: warningText ? sanitizeExecApprovalWarningText(warningText) : null,
+        commandExplanationLines,
+        commandExplanationHighlights: p.commandExplanationHighlights,
         allowedDecisions: resolveExecApprovalAllowedDecisions({ ask: p.ask ?? null }),
         agentId: effectiveAgentId ?? null,
         resolvedPath: p.resolvedPath ?? null,
