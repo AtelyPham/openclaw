@@ -6,6 +6,7 @@ import {
   repairManagedNpmRootOpenClawPeer,
   removeManagedNpmRootDependency,
   readManagedNpmRootInstalledDependency,
+  readOpenClawManagedNpmRootOverrides,
   resolveManagedNpmRootDependencySpec,
   upsertManagedNpmRootDependency,
 } from "./npm-managed-root.js";
@@ -68,6 +69,65 @@ describe("managed npm root", () => {
       devDependencies: {
         fixture: "1.0.0",
       },
+    });
+  });
+
+  it("syncs OpenClaw-owned overrides without dropping unrelated local overrides", async () => {
+    const npmRoot = await makeTempRoot();
+    await fs.writeFile(
+      path.join(npmRoot, "package.json"),
+      `${JSON.stringify(
+        {
+          private: true,
+          dependencies: {
+            "@openclaw/discord": "2026.5.2",
+          },
+          overrides: {
+            axios: "1.13.6",
+            "left-pad": "1.3.0",
+            qs: "6.14.0",
+          },
+          openclaw: {
+            managedOverrides: ["axios", "qs"],
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    await upsertManagedNpmRootDependency({
+      npmRoot,
+      packageName: "@openclaw/feishu",
+      dependencySpec: "2026.5.4",
+      managedOverrides: {
+        axios: "1.16.0",
+        "node-domexception": "npm:@nolyfill/domexception@1.0.28",
+      },
+    });
+
+    await expect(
+      fs.readFile(path.join(npmRoot, "package.json"), "utf8").then((raw) => JSON.parse(raw)),
+    ).resolves.toEqual({
+      private: true,
+      dependencies: {
+        "@openclaw/discord": "2026.5.2",
+        "@openclaw/feishu": "2026.5.4",
+      },
+      overrides: {
+        "left-pad": "1.3.0",
+        axios: "1.16.0",
+        "node-domexception": "npm:@nolyfill/domexception@1.0.28",
+      },
+      openclaw: {
+        managedOverrides: ["axios", "node-domexception"],
+      },
+    });
+  });
+
+  it("reads package-level npm overrides for managed plugin installs", async () => {
+    await expect(readOpenClawManagedNpmRootOverrides()).resolves.toMatchObject({
+      axios: "1.16.0",
     });
   });
 

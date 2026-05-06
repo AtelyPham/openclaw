@@ -9,6 +9,12 @@ import { createSafeNpmInstallEnv } from "./safe-package-install.js";
 type ManagedNpmRootManifest = {
   private?: boolean;
   dependencies?: Record<string, string>;
+  overrides?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+type ManagedNpmRootOpenClawMetadata = {
+  managedOverrides?: string[];
   [key: string]: unknown;
 };
 
@@ -29,6 +35,8 @@ type ManagedNpmRootLogger = {
 };
 
 type ManagedNpmRootRunCommand = typeof runCommandWithTimeout;
+
+const packageManifestUrl = new URL("../../package.json", import.meta.url);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -51,9 +59,53 @@ function readDependencyRecord(value: unknown): Record<string, string> {
   return dependencies;
 }
 
+function readOverrideRecord(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) {
+    return {};
+  }
+  const overrides: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (key.trim()) {
+      overrides[key] = raw;
+    }
+  }
+  return overrides;
+}
+
+function readManagedOverrideKeys(value: unknown): string[] {
+  if (!isRecord(value) || !Array.isArray(value.managedOverrides)) {
+    return [];
+  }
+  return value.managedOverrides.filter((key): key is string => typeof key === "string");
+}
+
+function buildManagedOpenClawMetadata(params: {
+  current: unknown;
+  managedOverrideKeys: string[];
+}): ManagedNpmRootOpenClawMetadata | undefined {
+  const metadata: ManagedNpmRootOpenClawMetadata = isRecord(params.current)
+    ? { ...params.current }
+    : {};
+  if (params.managedOverrideKeys.length > 0) {
+    metadata.managedOverrides = params.managedOverrideKeys;
+  } else {
+    delete metadata.managedOverrides;
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
 async function readManagedNpmRootManifest(filePath: string): Promise<ManagedNpmRootManifest> {
   const parsed = await readJsonIfExists<unknown>(filePath);
   return isRecord(parsed) ? { ...parsed } : {};
+}
+
+export async function readOpenClawManagedNpmRootOverrides(): Promise<Record<string, unknown>> {
+  try {
+    const manifest = JSON.parse(await fs.readFile(packageManifestUrl, "utf8")) as unknown;
+    return isRecord(manifest) ? readOverrideRecord(manifest.overrides) : {};
+  } catch {
+    return {};
+  }
 }
 
 export function resolveManagedNpmRootDependencySpec(params: {
@@ -67,11 +119,23 @@ export async function upsertManagedNpmRootDependency(params: {
   npmRoot: string;
   packageName: string;
   dependencySpec: string;
+  managedOverrides?: Record<string, unknown>;
 }): Promise<void> {
   await fs.mkdir(params.npmRoot, { recursive: true });
   const manifestPath = path.join(params.npmRoot, "package.json");
   const manifest = await readManagedNpmRootManifest(manifestPath);
   const dependencies = readDependencyRecord(manifest.dependencies);
+  const managedOverrides = readOverrideRecord(params.managedOverrides);
+  const managedOverrideKeys = Object.keys(managedOverrides).toSorted();
+  const overrides = readOverrideRecord(manifest.overrides);
+  for (const key of readManagedOverrideKeys(manifest.openclaw)) {
+    delete overrides[key];
+  }
+  Object.assign(overrides, managedOverrides);
+  const openclawMetadata = buildManagedOpenClawMetadata({
+    current: manifest.openclaw,
+    managedOverrideKeys,
+  });
   const next: ManagedNpmRootManifest = {
     ...manifest,
     private: true,
@@ -80,6 +144,16 @@ export async function upsertManagedNpmRootDependency(params: {
       [params.packageName]: params.dependencySpec,
     },
   };
+  if (Object.keys(overrides).length > 0) {
+    next.overrides = overrides;
+  } else {
+    delete next.overrides;
+  }
+  if (openclawMetadata) {
+    next.openclaw = openclawMetadata;
+  } else {
+    delete next.openclaw;
+  }
   await writeJson(manifestPath, next, { trailingNewline: true });
 }
 
