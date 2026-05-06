@@ -57,7 +57,7 @@ import {
   promoteConfigSnapshotToLastKnownGood as promoteConfigSnapshotToLastKnownGoodWithDeps,
   recoverConfigFromLastKnownGood as recoverConfigFromLastKnownGoodWithDeps,
 } from "./io.observe-recovery.js";
-import { persistGeneratedOwnerDisplaySecret } from "./io.owner-display-secret.js";
+import { retainGeneratedOwnerDisplaySecret } from "./io.owner-display-secret.js";
 import {
   collectChangedPaths,
   createMergePatch,
@@ -75,6 +75,7 @@ import {
   materializeRuntimeConfig,
 } from "./materialize.js";
 import { applyMergePatch } from "./merge-patch.js";
+import { assertConfigWriteAllowedInCurrentMode } from "./nix-mode-write-guard.js";
 import { resolveConfigPath, resolveIncludeRoots, resolveStateDir } from "./paths.js";
 import {
   extractShippedPluginInstallConfigRecords,
@@ -1254,17 +1255,13 @@ export function createConfigIO(
       cfg,
       () => pendingSecret ?? crypto.randomBytes(32).toString("hex"),
     );
-    const cfgWithOwnerDisplaySecret = persistGeneratedOwnerDisplaySecret({
+    const cfgWithOwnerDisplaySecret = retainGeneratedOwnerDisplaySecret({
       config: ownerDisplaySecretResolution.config,
       configPath,
       generatedSecret: ownerDisplaySecretResolution.generatedSecret,
-      logger: deps.logger,
       state: {
         pendingByPath: AUTO_OWNER_DISPLAY_SECRET_BY_PATH,
-        persistInFlight: AUTO_OWNER_DISPLAY_SECRET_PERSIST_IN_FLIGHT,
-        persistWarned: AUTO_OWNER_DISPLAY_SECRET_PERSIST_WARNED,
       },
-      persistConfig: (nextConfig, options) => writeConfigFile(nextConfig, options),
     });
 
     return applyConfigOverrides(cfgWithOwnerDisplaySecret);
@@ -1491,6 +1488,7 @@ export function createConfigIO(
       );
       const resolvedConfig = readResolution.resolvedConfigRaw;
       const installMigration = migrateAndStripShippedPluginInstallConfigRecords(resolvedConfig, {
+        persist: false,
         rootConfigRaw: parsed,
       });
       const effectiveConfigRaw = installMigration.config;
@@ -1614,11 +1612,7 @@ export function createConfigIO(
     }
   }
 
-  async function readConfigFileSnapshotInternal(
-    options: {
-      persistShippedPluginInstallMigration?: boolean;
-    } = {},
-  ): Promise<ReadConfigFileSnapshotInternalResult> {
+  async function readConfigFileSnapshotInternal(): Promise<ReadConfigFileSnapshotInternalResult> {
     maybeLoadDotEnvForConfig(deps.env);
     const exists = deps.fs.existsSync(configPath);
     if (!exists) {
@@ -1729,7 +1723,7 @@ export function createConfigIO(
         "config.snapshot.read.plugin-install-migration",
         () =>
           migrateAndStripShippedPluginInstallConfigRecords(resolvedConfigRaw, {
-            persist: options.persistShippedPluginInstallMigration !== false,
+            persist: false,
             rootConfigRaw: effectiveParsed,
           }),
       );
@@ -1892,9 +1886,7 @@ export function createConfigIO(
   }
 
   async function readConfigFileSnapshotForWrite(): Promise<ReadConfigFileSnapshotForWriteResult> {
-    const result = await readConfigFileSnapshotInternal({
-      persistShippedPluginInstallMigration: false,
-    });
+    const result = await readConfigFileSnapshotInternal();
     return {
       snapshot: result.snapshot,
       writeOptions: {
@@ -1949,16 +1941,11 @@ export function createConfigIO(
     cfg: OpenClawConfig,
     options: ConfigWriteOptions = {},
   ): Promise<{ persistedHash: string; persistedConfig: OpenClawConfig }> {
+    assertConfigWriteAllowedInCurrentMode({ configPath, env: deps.env });
     clearConfigCache();
     const unsetPaths = resolveManagedUnsetPathsForWrite(options.unsetPaths);
     let persistCandidate: unknown = cfg;
-    const snapshot =
-      options.baseSnapshot ??
-      (
-        await readConfigFileSnapshotInternal({
-          persistShippedPluginInstallMigration: false,
-        })
-      ).snapshot;
+    const snapshot = options.baseSnapshot ?? (await readConfigFileSnapshotInternal()).snapshot;
     let envRefMap: Map<string, string> | null = null;
     let changedPaths: Set<string> | null = null;
     if (snapshot.valid && snapshot.exists) {
@@ -2241,8 +2228,6 @@ export function createConfigIO(
 // module scope. `OPENCLAW_CONFIG_PATH` (and friends) are expected to work even
 // when set after the module has been imported (tests, one-off scripts, etc.).
 const AUTO_OWNER_DISPLAY_SECRET_BY_PATH = new Map<string, string>();
-const AUTO_OWNER_DISPLAY_SECRET_PERSIST_IN_FLIGHT = new Set<string>();
-const AUTO_OWNER_DISPLAY_SECRET_PERSIST_WARNED = new Set<string>();
 export function clearConfigCache(): void {
   // Compat shim: runtime snapshot is the only in-process cache now.
 }
@@ -2381,6 +2366,7 @@ export async function writeConfigFile(
   options: ConfigWriteOptions = {},
 ): Promise<void> {
   const io = createConfigIO(options.skipPluginValidation ? { pluginValidation: "skip" } : {});
+  assertConfigWriteAllowedInCurrentMode({ configPath: io.configPath });
   let nextCfg = cfg;
   const runtimeConfigSnapshot = getRuntimeConfigSnapshotState();
   const runtimeConfigSourceSnapshot = getRuntimeConfigSourceSnapshotState();
